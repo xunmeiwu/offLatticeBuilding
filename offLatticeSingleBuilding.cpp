@@ -32,19 +32,17 @@ static plint margin =
         1;  // Extra margin of allocated cells around the obstacle, for the case of moving walls.
 static plint blockSize = 0;  // Size of blocks in the sparse/parallel representation.
 // Zero means: don't use sparse representation.
-static plint extraLayer = 1;
-static plint envelopeWidth = 1;
 static plint extendedEnvelopeWidth = 2;  // Extrapolated off-lattice BCs.
 
 const T X_Length = 4.08;            //流域X方向长度；
 const T Y_Length = 2.2;            //流域Y方向长度；
 const T Z_Length = 1.8;            //流域Z方向长度；
-const T cx = 1.6;                 //Position of the obstacle, in physical units.
-const T cy = 1.02;
+const T cx = 1.62;                 //Position of the obstacle, in physical units.
+const T cy = 1.1;
 const T stlLength = 0.16;         //stl模型的长度
 
 /** 单位转换参数 **/
-const T resolution = 50.;                   //物理长度的网格数
+const T resolution = 25.;                   //物理长度的网格数
 const T charNu = 1.5e-5;                //代表物理动粘性系数；
 const T latticeU = 0.01;        //晶格速度，与马赫数匹配
 
@@ -54,15 +52,15 @@ const Array<T, 3> u0((T) 0., (T) 0., (T) 0.);
 
 /** 模拟参数 **/
 const T iniT = (T) 0;                 // 模拟初始时刻，单位s，一般从0开始，若大于0则需要读取现有晶格
-const T maxT = (T) iniT + 60. + 0.1; // 模拟截止时刻，单位s
+const T maxT = (T) iniT + 3. + 0.1; // 模拟截止时刻，单位s
 const T cSmago = 0.12;              // Smagorisky常数
 
-const T statT = (T) 0.01;     // 控制台Log显示时间间隔，单位s
+const T statT = (T) 0.1;     // 控制台Log显示时间间隔，单位s
 const T vtkStartT = (T) 0.; //VTK文件输出开始时间，单位s
-const T vtkT = (T) 10;    // VTK文件输出时间间隔，单位s
+const T vtkT = (T) 1;    // VTK文件输出时间间隔，单位s
 const T imSave = (T) 0.1;    // image文件输出时间间隔，单位s
 const bool useAve = true;    //是否进行时间平均
-const T aveStartT = (T) 40.; //平均开始时间
+const T aveStartT = (T) 2.; //平均开始时间
 const T aveDelta = (T) 0.05; //平均时间间隔，单位s
 
 const std::string inletPath = "samplingFace/"; // Path and prefix of inlet files
@@ -87,7 +85,7 @@ string getTime() {
     return tmp;
 }
 
-#include "readInlet_FOAM.h"
+//#include "readInlet_FOAM.h"
 
 /** 确定模型每个边的边界条件 **/
 void boundarySetup(MultiBlockLattice3D<T, DESCRIPTOR> &lattice,
@@ -133,7 +131,7 @@ void boundarySetup(MultiBlockLattice3D<T, DESCRIPTOR> &lattice,
     setBoundaryVelocity(lattice, lattice.getBoundingBox(), u0);
     setBoundaryDensity(lattice, Outlet, rho0);
     initializeAtEquilibrium(lattice, lattice.getBoundingBox(), rho0, u0);
-//    setBoundaryVelocity(lattice, Inlet, uBoundary);
+    setBoundaryVelocity(lattice, Inlet, uBoundary);
     lattice.initialize();
 }
 
@@ -237,14 +235,24 @@ void runProgram(IncomprFlowParam<T> parameters) {
     pcout << std::endl << "Reading STL data for the obstacle geometry." << std::endl;
     // The triangle-set defines the surface of the geometry.
     TriangleSet<T> *triangleSet = new TriangleSet<T>(geometry_fname, DBL);
-    pcout << "stlLength * resolution =" << stlLength * resolution << "cx * resolution =" << cx * resolution
-          << "cy * resolution =" << cy * resolution << std::endl;
+//    triangleSet->scale(parameters.getDeltaX()); // In lattice units from now on...
+    Cuboid<T> bCuboid = triangleSet->getBoundingCuboid();
+    Array<T, 3> obstacleCenter = (T) 0.5 * (bCuboid.lowerLeftCorner + bCuboid.upperRightCorner);
+    triangleSet->translate(-obstacleCenter);
+    triangleSet->scale(stlLength * resolution);
+    Array<T, 3> cornerLB(cx * resolution,
+                         cy * resolution,
+                         stlLength * resolution + 1);
+    triangleSet->translate(cornerLB);
+    triangleSet->writeBinarySTL(outputDir + "obstacle_LB.stl");
 
-    DEFscaledMesh<T> *defMesh = new DEFscaledMesh<T>(*triangleSet, util::roundToInt(stlLength * resolution), xDirection,
+
+    pcout << "stlLength * resolution =" << stlLength * resolution << "  cx * resolution =" << cx * resolution
+          << "  cy * resolution =" << cy * resolution << std::endl;
+
+    DEFscaledMesh<T> *defMesh = new DEFscaledMesh<T>(*triangleSet, 0, xDirection,
                                                      margin,
-                                                     Dot3D(util::roundToInt(cx * resolution),
-                                                           util::roundToInt(cy * resolution),
-                                                           1));
+                                                     Dot3D(0, 0, 0));
 
     delete triangleSet;
     triangleSet = 0;
@@ -283,6 +291,17 @@ void runProgram(IncomprFlowParam<T> parameters) {
     defineDynamics(
             *lattice, voxelizedDomain.getVoxelMatrix(), lattice->getBoundingBox(),
             new NoDynamics<T, DESCRIPTOR>(), voxelFlag::inside);
+    defineDynamics(
+            *lattice, voxelizedDomain.getVoxelMatrix(), lattice->getBoundingBox(),
+            new NoDynamics<T, DESCRIPTOR>(), voxelFlag::innerBorder);
+    defineDynamics(
+            *lattice, voxelizedDomain.getVoxelMatrix(), lattice->getBoundingBox(),
+            new NoDynamics<T, DESCRIPTOR>(), voxelFlag::undetermined);
+    defineDynamics(
+            *lattice, voxelizedDomain.getVoxelMatrix(), lattice->getBoundingBox(),
+            new NoDynamics<T, DESCRIPTOR>(), voxelFlag::toBeInside);
+
+
     /*
      * 生成stl的off-lattice边界条件和outer边界条件。
      */
@@ -298,6 +317,7 @@ void runProgram(IncomprFlowParam<T> parameters) {
     offLatticeModel = new GuoOffLatticeModel3D<T, DESCRIPTOR>(
             new TriangleFlowShape3D<T, Array<T, 3> >(voxelizedDomain.getBoundary(), profiles), flowType,
             useAllDirections);
+//    offLatticeModel = new FilippovaHaenelLocalModel3D<T,DESCRIPTOR>(new TriangleFlowShape3D<T, Array<T, 3> >(voxelizedDomain.getBoundary(), profiles), flowType);
 //    bool velIsJ = true;
 //    offLatticeModel->setVelIsJ(velIsJ);
     boundaryCondition = new OffLatticeBoundaryCondition3D<T, DESCRIPTOR, Velocity>(
@@ -367,9 +387,9 @@ void runProgram(IncomprFlowParam<T> parameters) {
     global::timer("mainLoop").start(); //主循环计时器
     global::timer("iteLog").start();   // log显示之间的循环计时器
 
-    FOAM_InletBC InletBCFromFOAM(inletPath, Box3D(0, 0, 1, ny - 2, 1, nz - 2), inletFileScaling, pntDim,
-                                 ratioPntToLattice, readPntStartPosition);
-    InletBCFromFOAM.initializeFOAMPnts(parameters);
+//    FOAM_InletBC InletBCFromFOAM(inletPath, Box3D(0, 0, 1, ny - 2, 1, nz - 2), inletFileScaling, pntDim,
+//                                 ratioPntToLattice, readPntStartPosition);
+//    InletBCFromFOAM.initializeFOAMPnts(parameters);
 
     // 从初始时间iniT开始进行主循环
     pcout << "Starting iteration, Current time: " << getTime() << endl;
@@ -402,8 +422,8 @@ void runProgram(IncomprFlowParam<T> parameters) {
                   << nearRoofVel[1] * dx / dt << "," << nearRoofVel[2] * dx / dt << std::endl;
         }
 
-        //Reading FOAM inlet U data
-        InletBCFromFOAM.readFOAMU(*lattice, parameters, iT);
+//        //Reading FOAM inlet U data
+//        InletBCFromFOAM.readFOAMU(*lattice, parameters, iT);
 
         lattice->collideAndStream();
 
